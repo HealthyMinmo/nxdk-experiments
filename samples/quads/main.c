@@ -26,7 +26,9 @@ static float     m_viewport[4][4];
 
 //NV20 GPU expects BGRA textures, not RGBA!!!
 //#include "texture_simple.h"
-#include "texture_320x240.h"
+//#include "texture_320x240.h"
+#include "texture_640x480.h"
+
 
 typedef struct {
     float pos[3];
@@ -63,6 +65,8 @@ static const TexturedVertex verts[] = {
 };
 */
 
+//For texture_320x240.h
+/*
 static const TexturedVertex verts[] = {
     {{-1.0, -1.0, 1.0}, {0.0, 0.0, 1.0}, {0.0, 0.0}},        // Bottom-left (0,0)
     {{-1.0,  1.0, 1.0}, {0.0, 0.0, 1.0}, {0.0, 239.0}},      // Top-left (0,239)
@@ -72,6 +76,19 @@ static const TexturedVertex verts[] = {
     {{ 1.0,  1.0, 1.0}, {0.0, 0.0, 1.0}, {319.0, 239.0}},    // Top-right (319,239)
     {{ 1.0, -1.0, 1.0}, {0.0, 0.0, 1.0}, {319.0, 0.0}},      // Bottom-right (319,0)
 };
+*/
+
+//For texture_640x480.h
+static const TexturedVertex verts[] = {
+    {{-1.0, -1.0, 1.0}, {0.0, 0.0, 1.0}, {0.0, 0.0}},        // Bottom-left (0,0)
+    {{-1.0,  1.0, 1.0}, {0.0, 0.0, 1.0}, {0.0, 479.0}},      // Top-left (0,479)
+    {{ 1.0,  1.0, 1.0}, {0.0, 0.0, 1.0}, {639.0, 479.0}},    // Top-right (639,479)     
+    
+    {{-1.0, -1.0, 1.0}, {0.0, 0.0, 1.0}, {0.0, 0.0}},        // Bottom-left (0,0)
+    {{ 1.0,  1.0, 1.0}, {0.0, 0.0, 1.0}, {639.0, 479.0}},    // Top-right (639,479)     
+    {{ 1.0, -1.0, 1.0}, {0.0, 0.0, 1.0}, {639.0, 0.0}},      // Bottom-right (639,0)
+};
+
 
 #define MASK(mask, val) (((val) << (ffs(mask)-1)) & (mask))
 
