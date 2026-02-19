@@ -4,7 +4,6 @@
  */
 #include <hal/video.h>
 #include <hal/xbox.h>
-#define _USE_MATH_DEFINES
 #include <math.h>
 #include <pbkit/pbkit.h>
 #include <stdint.h>
@@ -12,38 +11,67 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <windows.h>
 #include <xboxkrnl/xboxkrnl.h>
 #include <hal/debug.h>
-#include "math3d.h"
+#include <windows.h>
+//#include "math3d.h"
 
 static uint32_t *alloc_vertices;
 static uint32_t  num_vertices;
-static uint32_t  num_indices;
+static float     m_viewport[4][4];
 
-MATRIX m_model, m_view, m_proj, m_mvp;
+//VECTOR v_light_color = {  1,   1,   1,  1 };
+//VECTOR v_light_pos   = {  0, 140,   0,  1 };
+//float light_ambient  = 0.125f;
 
-VECTOR v_obj_rot     = {  0,   0,   0,  1 };
-VECTOR v_obj_scale   = {  1,   1,   1,  1 };
-VECTOR v_obj_pos     = {  0,   0,   0,  1 };
-VECTOR v_cam_loc     = {  0,   0, 165,  1 };
-VECTOR v_cam_rot     = {  0,   0,   0,  1 };
-VECTOR v_light_color = {  1,   1,   1,  1 };
-VECTOR v_light_pos   = {  0, 140,   0,  1 };
+//NV20 GPU expects BGRA textures, not RGBA!!!
+//#include "texture_simple.h"
+#include "texture_320x240.h"
 
-float light_ambient  = 0.125f;
-
-#pragma pack(1)
-typedef struct Vertex {
+typedef struct {
     float pos[3];
-    float normal[3];
-    float texcoord[2];
-} Vertex;
+    float color[3];
+} __attribute__((packed)) ColoredVertex;
 
-#pragma pack()
+static const ColoredVertex vertsOld[] = {
+    //  X     Y     Z       R     G     B
+    {{-1.0, -1.0,  1.0}, { 0.1,  0.1,  0.6} }, /* Background triangle 1 */
+    {{-1.0,  1.0,  1.0}, { 0.0,  0.0,  0.0} },
+    {{ 1.0,  1.0,  1.0}, { 0.0,  0.0,  0.0} },
+    {{-1.0, -1.0,  1.0}, { 0.1,  0.1,  0.6} }, /* Background triangle 2 */
+    {{ 1.0,  1.0,  1.0}, { 0.0,  0.0,  0.0} },
+    {{ 1.0, -1.0,  1.0}, { 0.1,  0.1,  0.6} }
+};
 
-#include "verts.h"
-#include "texture.h"
+typedef struct {
+    float pos[3];      // Position (X, Y, Z)
+    float normal[3];   // Normal (not used, but for alignment)
+    float texcoord[2]; // Texture coordinates (U, V) - 0.0 to 1.0
+} __attribute__((packed)) TexturedVertex;
+
+/*
+//For texture_simple.h
+static const TexturedVertex verts[] = {
+    // X    Y    Z     NX   NY   NZ   U    V  (U,V as pixel coords like mesh)
+    {{-1.0, -1.0, 1.0}, {0.0, 0.0, 1.0}, {0.0, 0.0}}, // Bottom-left (0,0)
+    {{-1.0,  1.0, 1.0}, {0.0, 0.0, 1.0}, {0.0, 255.0}}, // Top-left (0,255)
+    {{ 1.0,  1.0, 1.0}, {0.0, 0.0, 1.0}, {255.0, 255.0}}, // Top-right (255,255)
+    
+    {{-1.0, -1.0, 1.0}, {0.0, 0.0, 1.0}, {0.0, 0.0}}, // Bottom-left (0,0)
+    {{ 1.0,  1.0, 1.0}, {0.0, 0.0, 1.0}, {255.0, 255.0}}, // Top-right (255,255)
+    {{ 1.0, -1.0, 1.0}, {0.0, 0.0, 1.0}, {255.0, 0.0}}, // Bottom-right (255,0)
+};
+*/
+
+static const TexturedVertex verts[] = {
+    {{-1.0, -1.0, 1.0}, {0.0, 0.0, 1.0}, {0.0, 0.0}},        // Bottom-left (0,0)
+    {{-1.0,  1.0, 1.0}, {0.0, 0.0, 1.0}, {0.0, 239.0}},      // Top-left (0,239)
+    {{ 1.0,  1.0, 1.0}, {0.0, 0.0, 1.0}, {319.0, 239.0}},    // Top-right (319,239)
+    
+    {{-1.0, -1.0, 1.0}, {0.0, 0.0, 1.0}, {0.0, 0.0}},        // Bottom-left (0,0)
+    {{ 1.0,  1.0, 1.0}, {0.0, 0.0, 1.0}, {319.0, 239.0}},    // Top-right (319,239)
+    {{ 1.0, -1.0, 1.0}, {0.0, 0.0, 1.0}, {319.0, 0.0}},      // Bottom-right (319,0)
+};
 
 #define MASK(mask, val) (((val) << (ffs(mask)-1)) & (mask))
 
@@ -61,7 +89,6 @@ static void init_shader(void);
 static void init_textures(void);
 static void set_attrib_pointer(unsigned int index, unsigned int format, unsigned int size, unsigned int stride, const void* data);
 static void draw_arrays(unsigned int mode, int start, int count);
-static void draw_indices(void);
 
 /* Main program function */
 int main(void)
@@ -71,7 +98,6 @@ int main(void)
     int       width, height;
     int       start, last, now;
     int       fps, frames, frames_total;
-    float     m_viewport[4][4];
 
     XVideoSetMode(640, 480, 32, REFRESH_DEFAULT);
 
@@ -91,26 +117,14 @@ int main(void)
     init_shader();
     init_textures();
 
-    alloc_vertices = MmAllocateContiguousMemoryEx(sizeof(vertices), 0, MAXRAM, 0, PAGE_READWRITE | PAGE_WRITECOMBINE);
-    memcpy(alloc_vertices, vertices, sizeof(vertices));
-    num_vertices = sizeof(vertices)/sizeof(vertices[0]);
-    num_indices = sizeof(indices)/sizeof(indices[0]);
+    alloc_vertices = MmAllocateContiguousMemoryEx(sizeof(verts), 0, 0x3ffb000, 0, PAGE_READWRITE | PAGE_WRITECOMBINE);
+    memcpy(alloc_vertices, verts, sizeof(verts));
+    num_vertices = sizeof(verts)/sizeof(verts[0]);
+    matrix_viewport(m_viewport, 0, 0, width, height, 0, 65536.0f);
 
     /* Setup to determine frames rendered every second */
     start = now = last = GetTickCount();
     frames_total = frames = fps = 0;
-
-    /* Create view matrix (our camera is static) */
-    matrix_unit(m_view);
-    create_world_view(m_view, v_cam_loc, v_cam_rot);
-
-    /* Create projection matrix */
-    matrix_unit(m_proj);
-    create_view_screen(m_proj, (float)width/(float)height, -1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 10000.0f);
-
-    /* Create viewport matrix, combine with projection */
-    matrix_viewport(m_viewport, 0, 0, width, height, 0, 65536.0f);
-    matrix_multiply(m_proj, m_proj, (float*)m_viewport);
 
     while(1) {
         pb_wait_for_vbl();
@@ -119,17 +133,8 @@ int main(void)
 
         /* Clear depth & stencil buffers */
         pb_erase_depth_stencil_buffer(0, 0, width, height);
-        pb_fill(0, 0, width, height, 0xff202020);
+        pb_fill(0, 0, width, height, 0x00000000);
         pb_erase_text_screen();
-
-        /* Tilt and rotate the object a bit */
-        v_obj_rot[0] = (float)((now-start))/1000.0f * M_PI * -0.25f;
-
-        /* Create local->world matrix given our updated object */
-        matrix_unit(m_model);
-        matrix_rotate(m_model, m_model, v_obj_rot);
-        matrix_scale(m_model, m_model, v_obj_scale);
-        matrix_translate(m_model, m_model, v_obj_pos);
 
         while(pb_busy()) {
             /* Wait for completion... */
@@ -137,17 +142,23 @@ int main(void)
 
         /*
          * Setup texture stages
-         */
+        */
 
         /* Enable texture stage 0 */
         /* FIXME: Use constants instead of the hardcoded values below */
+        /*
+        * Note to self on scaling:
+        *   x04074000 = Linear filtering (with AA)
+        *   0x02022000 = Presumably nearest neighbor or point sampling (no AA)
+        */
         p = pb_begin();
         p = pb_push2(p,NV20_TCL_PRIMITIVE_3D_TX_OFFSET(0),(DWORD)texture.addr & 0x03ffffff,0x0001122a); //set stage 0 texture address & format
         p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_NPOT_PITCH(0),texture.pitch<<16); //set stage 0 texture pitch (pitch<<16)
         p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_NPOT_SIZE(0),(texture.width<<16)|texture.height); //set stage 0 texture width & height ((witdh<<16)|height)
         p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_WRAP(0),0x00030303);//set stage 0 texture modes (0x0W0V0U wrapping: 1=wrap 2=mirror 3=clamp 4=border 5=clamp to edge)
         p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_ENABLE(0),0x4003ffc0); //set stage 0 texture enable flags
-        p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_FILTER(0),0x04074000); //set stage 0 texture filters (AA!)
+        //p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_FILTER(0),0x04074000); //set stage 0 texture filters (AA!)
+        p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_FILTER(0),0x02022000); //set stage 0 texture filters (no AA - nearest neighbor)
         pb_end(p);
 
         /* Disable other texture stages */
@@ -172,69 +183,39 @@ int main(void)
         p = pb_begin();
 
         /* Set shader constants cursor at C0 */
-        p = pb_push1(p, NV20_TCL_PRIMITIVE_3D_VP_UPLOAD_CONST_ID, 96);
+        p = pb_push1(p, NV097_SET_TRANSFORM_CONSTANT_LOAD, 96);
 
-        /* Send the model matrix */
-        pb_push(p++, NV20_TCL_PRIMITIVE_3D_VP_UPLOAD_CONST_X, 16);
-        memcpy(p, m_model, 16*4); p+=16;
+        /* Send the transformation matrix */
+        pb_push(p++, NV097_SET_TRANSFORM_CONSTANT, 16);
+        memcpy(p, m_viewport, 16*4); p+=16;
 
-        /* Send the view matrix */
-        pb_push(p++, NV20_TCL_PRIMITIVE_3D_VP_UPLOAD_CONST_X, 16);
-        memcpy(p, m_view, 16*4); p+=16;
-
-        /* Send the projection matrix */
-        pb_push(p++, NV20_TCL_PRIMITIVE_3D_VP_UPLOAD_CONST_X, 16);
-        memcpy(p, m_proj, 16*4); p+=16;
-
-        /* Send camera position */
-        pb_push(p++, NV20_TCL_PRIMITIVE_3D_VP_UPLOAD_CONST_X, 4);
-        memcpy(p, v_cam_loc, 4*4); p+=4;
-
-        /* Send light position */
-        pb_push(p++, NV20_TCL_PRIMITIVE_3D_VP_UPLOAD_CONST_X, 4);
-        memcpy(p, v_light_pos, 4*4); p+=4;
-
-        /* Send light color */
-        pb_push(p++, NV20_TCL_PRIMITIVE_3D_VP_UPLOAD_CONST_X, 4);
-        memcpy(p, v_light_color, 4*4); p+=4;
-
-        /* Send ambient light intensity */
-        pb_push(p++, NV20_TCL_PRIMITIVE_3D_VP_UPLOAD_CONST_X, 4);
-        memcpy(p, &light_ambient, 4); p+=4;
-
-        /* Send shader constants 0 2 64 1 */
-        float constants_0[4] = {0, 2, 64, 1};
-        pb_push(p++, NV20_TCL_PRIMITIVE_3D_VP_UPLOAD_CONST_X, 4);
-        memcpy(p, constants_0, 4*4); p+=4;
+        pb_end(p);
+        p = pb_begin();
 
         /* Clear all attributes */
-        pb_push(p++,NV097_SET_VERTEX_DATA_ARRAY_FORMAT,16);
+        pb_push(p++, NV097_SET_VERTEX_DATA_ARRAY_FORMAT,16);
         for(i = 0; i < 16; i++) {
             *(p++) = 2;
         }
         pb_end(p);
 
-        /*
-         * Setup vertex attributes
-         */
-
-        /* Set vertex position attribute */
+        /* Set vertex position attribute (attribute 0 = POSITION) */
         set_attrib_pointer(0, NV097_SET_VERTEX_DATA_ARRAY_FORMAT_TYPE_F,
-                           3, sizeof(Vertex), &alloc_vertices[0]);
+                           3, sizeof(TexturedVertex), &alloc_vertices[0]);
 
-        /* Set vertex normal attribute */
-        //set_attrib_pointer(2, NV097_SET_VERTEX_DATA_ARRAY_FORMAT_TYPE_F,
-         //                  3, sizeof(Vertex), &alloc_vertices[3]);
+        /* Set vertex normal attribute (not used, but matching mesh structure) */
+        set_attrib_pointer(2, NV097_SET_VERTEX_DATA_ARRAY_FORMAT_TYPE_F,
+                           3, sizeof(TexturedVertex), &alloc_vertices[3]);
 
         /* Set texture coordinate attribute */
         set_attrib_pointer(9, NV097_SET_VERTEX_DATA_ARRAY_FORMAT_TYPE_F,
-                           2, sizeof(Vertex), &alloc_vertices[6]);
+                           2, sizeof(TexturedVertex), &alloc_vertices[6]);
 
         /* Begin drawing triangles */
-        draw_indices();
+        draw_arrays(NV097_SET_BEGIN_END_OP_TRIANGLES, 0, num_vertices);
 
         /* Draw some text on the screen */
-        pb_print("Mesh Demo\n");
+        pb_print("Triangle Demo\n");
         pb_print("Frames: %d\n", frames_total);
         if (fps > 0) {
             pb_print("FPS: %d", fps);
@@ -304,9 +285,10 @@ static void init_shader(void)
                  | MASK(NV097_SET_TRANSFORM_EXECUTION_MODE_RANGE_MODE, NV097_SET_TRANSFORM_EXECUTION_MODE_RANGE_MODE_PRIV));
 
     p = pb_push1(p, NV097_SET_TRANSFORM_PROGRAM_CXT_WRITE_EN, 0);
+
     pb_end(p);
 
-    /* Set cursor and begin copying program */
+    /* Set cursor for program upload */
     p = pb_begin();
     p = pb_push1(p, NV097_SET_TRANSFORM_PROGRAM_LOAD, 0);
     pb_end(p);
@@ -326,6 +308,31 @@ static void init_shader(void)
     pb_end(p);
 }
 
+/* Set an attribute pointer */
+static void set_attrib_pointer(unsigned int index, unsigned int format, unsigned int size, unsigned int stride, const void* data)
+{
+    uint32_t *p = pb_begin();
+    p = pb_push1(p, NV097_SET_VERTEX_DATA_ARRAY_FORMAT + index*4,
+                 MASK(NV097_SET_VERTEX_DATA_ARRAY_FORMAT_TYPE, format) | \
+                 MASK(NV097_SET_VERTEX_DATA_ARRAY_FORMAT_SIZE, size) |  \
+                 MASK(NV097_SET_VERTEX_DATA_ARRAY_FORMAT_STRIDE, stride));
+    p = pb_push1(p, NV097_SET_VERTEX_DATA_ARRAY_OFFSET + index*4, (uint32_t)data & 0x03ffffff);
+    pb_end(p);
+}
+
+/* Send draw commands for the triangles */
+static void draw_arrays(unsigned int mode, int start, int count)
+{
+    uint32_t *p = pb_begin();
+    p = pb_push1(p, NV097_SET_BEGIN_END, mode);
+
+    p = pb_push1(p, 0x40000000|NV097_DRAW_ARRAYS, //bit 30 means all params go to same register 0x1810
+                 MASK(NV097_DRAW_ARRAYS_COUNT, (count-1)) | MASK(NV097_DRAW_ARRAYS_START_INDEX, start));
+
+    p = pb_push1(p, NV097_SET_BEGIN_END, NV097_SET_BEGIN_END_OP_END);
+    pb_end(p);
+}
+
 /* Load the textures we will render with */
 static void init_textures(void)
 {
@@ -336,45 +343,3 @@ static void init_textures(void)
     memcpy(texture.addr, texture_rgba, sizeof(texture_rgba));
 }
 
-/* Set an attribute pointer */
-static void set_attrib_pointer(unsigned int index, unsigned int format, unsigned int size, unsigned int stride, const void* data)
-{
-    uint32_t *p = pb_begin();
-    p = pb_push1(p, NV097_SET_VERTEX_DATA_ARRAY_FORMAT + index*4,
-        MASK(NV097_SET_VERTEX_DATA_ARRAY_FORMAT_TYPE, format) | \
-        MASK(NV097_SET_VERTEX_DATA_ARRAY_FORMAT_SIZE, size) | \
-        MASK(NV097_SET_VERTEX_DATA_ARRAY_FORMAT_STRIDE, stride));
-    p = pb_push1(p, NV097_SET_VERTEX_DATA_ARRAY_OFFSET + index*4, (uint32_t)data & 0x03ffffff);
-    pb_end(p);
-}
-
-/* Draw vertices using the index method */
-static void draw_indices(void)
-{
-    /* Indices are already packed as dwords, so we simply send them out in batches */
-    #define MIN(a,b) ((a)<(b)?(a):(b))
-    #define MAX_BATCH 120
-
-    uint32_t *p;
-    unsigned int i, num_this_batch;
-
-    for (i = 0; i < num_indices; ) {
-        /* Determine how many can be sent in this batch */
-        num_this_batch = MIN(MAX_BATCH, num_indices-i);
-
-        /* Begin by stating what these indices are and how many we'll send */
-        p = pb_begin();
-        p = pb_push1(p, NV097_SET_BEGIN_END, TRIANGLES);
-        pb_push(p++, 0x40000000|NV20_TCL_PRIMITIVE_3D_INDEX_DATA, num_this_batch);
-
-        /* Send the indices */
-        memcpy(p, &indices[i], num_this_batch * sizeof(uint32_t));
-        p += num_this_batch;
-
-        /* Finished with this batch */
-        p = pb_push1(p, NV097_SET_BEGIN_END, NV097_SET_BEGIN_END_OP_END);
-        pb_end(p);
-
-        i += num_this_batch;
-    }
-}

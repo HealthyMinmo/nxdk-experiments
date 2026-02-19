@@ -1,0 +1,16 @@
+struct vIn {
+	float4 tex  : TEXCOORD;
+	float4 pos  : POSITION;
+};
+
+struct vOut {
+	float4 pos  : POSITION;
+	float2 tex0 : TEXCOORD0;
+};
+
+vOut main(vIn I, uniform float4x4 m_viewport) {
+	vOut result;
+	result.pos = mul(float4(I.pos.xyz, 1.0f), m_viewport);
+	result.tex0 = I.tex.xy;
+	return result;
+}

@@ -37,6 +37,7 @@ static const ColoredVertex verts[] = {
     {{ 1.0, -1.0,  1.0}, { 0.0,  0.0,  1.0}},
 };
 
+
 #define MASK(mask, val) (((val) << (ffs(mask)-1)) & (mask))
 
 static void matrix_viewport(float out[4][4], float x, float y, float width, float height, float z_min, float z_max);
