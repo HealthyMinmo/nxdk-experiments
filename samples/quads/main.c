@@ -175,7 +175,8 @@ int main(void)
         p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_WRAP(0),0x00030303);//set stage 0 texture modes (0x0W0V0U wrapping: 1=wrap 2=mirror 3=clamp 4=border 5=clamp to edge)
         p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_ENABLE(0),0x4003ffc0); //set stage 0 texture enable flags
         //p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_FILTER(0),0x04074000); //set stage 0 texture filters (AA!)
-        p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_FILTER(0),0x02022000); //set stage 0 texture filters (no AA - nearest neighbor)
+        //p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_FILTER(0),0x02022000); //set stage 0 texture filters (no AA - nearest neighbor) -> no it isn't
+        p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_FILTER(0),0x01010000); //set stage 0 texture filters (actually nearest neighbor)
         pb_end(p);
 
         /* Disable other texture stages */
