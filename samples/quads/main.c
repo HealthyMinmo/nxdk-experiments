@@ -16,6 +16,8 @@
 #include <windows.h>
 //#include "math3d.h"
 
+#define DBG
+
 static uint32_t *alloc_vertices;
 static uint32_t  num_vertices;
 static float     m_viewport[4][4];
@@ -51,8 +53,9 @@ typedef struct {
     float texcoord[2]; // Texture coordinates (U, V) - 0.0 to 1.0
 } __attribute__((packed)) TexturedVertex;
 
+
+//For texture_simple.h -> this texture words on real hardware and Xemu
 /*
-//For texture_simple.h
 static const TexturedVertex verts[] = {
     // X    Y    Z     NX   NY   NZ   U    V  (U,V as pixel coords like mesh)
     {{-1.0, -1.0, 1.0}, {0.0, 0.0, 1.0}, {0.0, 0.0}}, // Bottom-left (0,0)
@@ -65,7 +68,8 @@ static const TexturedVertex verts[] = {
 };
 */
 
-//For texture_320x240.h
+
+//For texture_320x240.h -> works in xemu and real hw
 /*
 static const TexturedVertex verts[] = {
     {{-1.0, -1.0, 1.0}, {0.0, 0.0, 1.0}, {0.0, 0.0}},        // Bottom-left (0,0)
@@ -78,7 +82,9 @@ static const TexturedVertex verts[] = {
 };
 */
 
-//For texture_640x480.h
+
+//For texture_640x480.h -> works in xemu and real hw
+
 static const TexturedVertex verts[] = {
     {{-1.0, -1.0, 1.0}, {0.0, 0.0, 1.0}, {0.0, 0.0}},        // Bottom-left (0,0)
     {{-1.0,  1.0, 1.0}, {0.0, 0.0, 1.0}, {0.0, 479.0}},      // Top-left (0,479)
@@ -88,6 +94,7 @@ static const TexturedVertex verts[] = {
     {{ 1.0,  1.0, 1.0}, {0.0, 0.0, 1.0}, {639.0, 479.0}},    // Top-right (639,479)     
     {{ 1.0, -1.0, 1.0}, {0.0, 0.0, 1.0}, {639.0, 0.0}},      // Bottom-right (639,0)
 };
+
 
 
 #define MASK(mask, val) (((val) << (ffs(mask)-1)) & (mask))
@@ -174,9 +181,8 @@ int main(void)
         p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_NPOT_SIZE(0),(texture.width<<16)|texture.height); //set stage 0 texture width & height ((witdh<<16)|height)
         p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_WRAP(0),0x00030303);//set stage 0 texture modes (0x0W0V0U wrapping: 1=wrap 2=mirror 3=clamp 4=border 5=clamp to edge)
         p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_ENABLE(0),0x4003ffc0); //set stage 0 texture enable flags
-        //p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_FILTER(0),0x04074000); //set stage 0 texture filters (AA!)
-        //p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_FILTER(0),0x02022000); //set stage 0 texture filters (no AA - nearest neighbor) -> no it isn't
-        p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_FILTER(0),0x01010000); //set stage 0 texture filters (actually nearest neighbor)
+        //p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_FILTER(0),0x04074000); //set stage 0 texture filters (AA!) -> works on xemu + real hw
+        //p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_FILTER(0),0x02022000); //set stage 0 texture filters (no AA - nearest neighbor) -> no it isn't -> works on xemu + real hw
         pb_end(p);
 
         /* Disable other texture stages */
