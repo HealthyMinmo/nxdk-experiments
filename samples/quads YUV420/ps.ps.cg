@@ -1,0 +1,44 @@
+struct vOut {
+	float2 tex0 : TEXCOORD0;
+};
+
+/* Bind samplers to explicit texture units so the fp20 backend allocates
+ * distinct texture units for each plane. Also avoid numeric literals
+ * outside [-1,1] by decomposing multipliers into allowed parts.
+ */
+uniform sampler2D texY : TEXUNIT0;
+uniform sampler2D texU : TEXUNIT1;
+uniform sampler2D texV : TEXUNIT2;
+
+float4 main(vOut I) : COLOR {
+	float y = tex2D(texY, I.tex0).r;
+	float u = tex2D(texU, I.tex0).r;
+	float v = tex2D(texV, I.tex0).r;
+
+	float y_n = y;
+	float u_n = u - 0.5;
+	float v_n = v - 0.5;
+
+	/* R = 1.164*(Y-16) + 1.596*(V-128) normalized -> implement as:
+	 * r = (1.164*y_n + 1.596*v_n) - offsetR
+	 * where 1.164*y_n = y_n + 0.164*y_n and 1.596*v_n = v_n + 0.596*v_n
+	 */
+	float r = y_n + y_n * 0.164 + v_n + v_n * 0.596;
+	r = r - 0.8710588; /* precomputed offset, < 1 */
+
+	/* G = 1.164*(Y-16) - 0.392*(U-128) - 0.813*(V-128) */
+	float g = y_n + y_n * 0.164 - u_n * 0.392 - v_n * 0.813;
+	g = g - 0.6755588;
+
+	/* B = 1.164*(Y-16) + 2.017*(U-128)
+	 * implement 2.017*u_n = u_n + u_n + u_n*0.017
+	 */
+	float b = y_n + y_n * 0.164 + u_n + u_n + u_n * 0.017;
+	b = b - (1.0 + 0.0815588);
+
+	r = clamp(r, 0.0, 1.0);
+	g = clamp(g, 0.0, 1.0);
+	b = clamp(b, 0.0, 1.0);
+
+	return float4(r, g, b, 1.0);
+}

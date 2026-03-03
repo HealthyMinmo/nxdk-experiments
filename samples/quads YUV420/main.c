@@ -111,8 +111,104 @@ struct {
 static void matrix_viewport(float out[4][4], float x, float y, float width, float height, float z_min, float z_max);
 static void init_shader(void);
 static void init_textures(void);
+static void upload_texture_from_yuv420(const uint8_t *yPlane, const uint8_t *uPlane, const uint8_t *vPlane,
+    int width, int height, int strideY, int strideU, int strideV);
+static void upload_yuv_planes_to_textures(const uint8_t *yPlane, const uint8_t *uPlane, const uint8_t *vPlane,
+    int width, int height, int strideY, int strideU, int strideV);
 static void set_attrib_pointer(unsigned int index, unsigned int format, unsigned int size, unsigned int stride, const void* data);
 static void draw_arrays(unsigned int mode, int start, int count);
+
+/* Allocate and upload Y/U/V planes to per-plane 32bpp textures (red channel contains plane value). */
+static void upload_yuv_planes_to_textures(const uint8_t *yPlane, const uint8_t *uPlane, const uint8_t *vPlane,
+    int width, int height, int strideY, int strideU, int strideV)
+{
+    size_t y_size, u_size, v_size;
+
+    y_tex_width = width;
+    y_tex_height = height;
+    y_tex_pitch = y_tex_width * 4;
+    y_size = (size_t)y_tex_pitch * y_tex_height;
+    if (y_tex_addr) MmFreeContiguousMemory(y_tex_addr);
+    y_tex_addr = MmAllocateContiguousMemoryEx(y_size, 0, MAXRAM, 0, PAGE_READWRITE | PAGE_WRITECOMBINE);
+    if (!y_tex_addr) return;
+
+    u_tex_width = (width+1)/2;
+    u_tex_height = (height+1)/2;
+    u_tex_pitch = u_tex_width * 4;
+    u_size = (size_t)u_tex_pitch * u_tex_height;
+    if (u_tex_addr) MmFreeContiguousMemory(u_tex_addr);
+    u_tex_addr = MmAllocateContiguousMemoryEx(u_size, 0, MAXRAM, 0, PAGE_READWRITE | PAGE_WRITECOMBINE);
+    if (!u_tex_addr) return;
+
+    v_tex_width = (width+1)/2;
+    v_tex_height = (height+1)/2;
+    v_tex_pitch = v_tex_width * 4;
+    v_size = (size_t)v_tex_pitch * v_tex_height;
+    if (v_tex_addr) MmFreeContiguousMemory(v_tex_addr);
+    v_tex_addr = MmAllocateContiguousMemoryEx(v_size, 0, MAXRAM, 0, PAGE_READWRITE | PAGE_WRITECOMBINE);
+    if (!v_tex_addr) return;
+
+    /* Fill Y texture (red channel contains Y) */
+    for (int y = 0; y < height; y++) {
+        uint32_t *dst = (uint32_t *)((uint8_t *)y_tex_addr + (size_t)y * y_tex_pitch);
+        const uint8_t *src = yPlane + (size_t)y * strideY;
+        for (int x = 0; x < width; x++) {
+            uint8_t yy = src[x];
+            uint32_t pix = ((uint32_t)yy << 16) | (0xFFu << 24);
+            dst[x] = pix;
+        }
+    }
+
+    /* Fill U and V textures (half-resolution) */
+    for (int yy = 0; yy < u_tex_height; yy++) {
+        uint32_t *udst = (uint32_t *)((uint8_t *)u_tex_addr + (size_t)yy * u_tex_pitch);
+        uint32_t *vdst = (uint32_t *)((uint8_t *)v_tex_addr + (size_t)yy * v_tex_pitch);
+        const uint8_t *usrc = uPlane + (size_t)yy * strideU;
+        const uint8_t *vsrc = vPlane + (size_t)yy * strideV;
+        for (int x = 0; x < u_tex_width; x++) {
+            uint8_t uval = usrc[x];
+            uint8_t vval = vsrc[x];
+            udst[x] = ((uint32_t)uval << 16) | (0xFFu << 24);
+            vdst[x] = ((uint32_t)vval << 16) | (0xFFu << 24);
+        }
+    }
+}
+
+/* Generate a simple YUV420 test pattern: horizontal luma gradient and
+ * chroma ramps on subsampled U/V planes. Caller must provide suitably
+ * allocated planes with given strides.
+ */
+static void generate_test_yuv420(uint8_t *yPlane, uint8_t *uPlane, uint8_t *vPlane,
+    int width, int height, int strideY, int strideU, int strideV)
+{
+    /* Y: horizontal gradient */
+    for (int y = 0; y < height; y++) {
+        uint8_t *yd = yPlane + (size_t)y * strideY;
+        for (int x = 0; x < width; x++) {
+            yd[x] = (uint8_t)((x * 255) / (width - 1));
+        }
+    }
+
+    /* U/V: subsampled ramps to show chroma */
+    int uw = (width + 1) / 2;
+    int uh = (height + 1) / 2;
+    for (int y = 0; y < uh; y++) {
+        uint8_t *ud = uPlane + (size_t)y * strideU;
+        uint8_t *vd = vPlane + (size_t)y * strideV;
+        for (int x = 0; x < uw; x++) {
+            ud[x] = (uint8_t)((x * 255) / (uw - 1));
+            vd[x] = (uint8_t)((y * 255) / (uh - 1));
+        }
+    }
+}
+
+/* Y/U/V texture handles (uploaded as 32bpp with plane value in red channel) */
+static void *y_tex_addr = NULL;
+static void *u_tex_addr = NULL;
+static void *v_tex_addr = NULL;
+static int y_tex_width = 0, y_tex_height = 0, y_tex_pitch = 0;
+static int u_tex_width = 0, u_tex_height = 0, u_tex_pitch = 0;
+static int v_tex_width = 0, v_tex_height = 0, v_tex_pitch = 0;
 
 /* Main program function */
 int main(void)
@@ -172,38 +268,33 @@ int main(void)
         }
 
         /*
-         * Setup texture stages
-        */
+            /* Setup Y/U/V texture stages (stage 0 = Y, 1 = U, 2 = V)
+             * We upload each plane into a 32bpp texture where the red channel
+             * contains the sampled plane value (0-255). The pixel shader
+             * samples texY/texU/texV and reconstructs RGB.
+             */
+            p = pb_begin();
+            p = pb_push2(p,NV20_TCL_PRIMITIVE_3D_TX_OFFSET(0),(DWORD)y_tex_addr & 0x03ffffff,0x0001122a);
+            p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_NPOT_PITCH(0), y_tex_pitch<<16);
+            p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_NPOT_SIZE(0),(y_tex_width<<16)|y_tex_height);
+            p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_WRAP(0),0x00030303);
+            p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_ENABLE(0),0x4003ffc0);
+            p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_FILTER(0),0x04074000); // linear
 
-        /* Enable texture stage 0 */
-        /* FIXME: Use constants instead of the hardcoded values below */
-        /*
-        * Note to self on scaling:
-        *   x04074000 = Linear filtering (with AA)
-        *   0x02022000 = Presumably nearest neighbor or point sampling (no AA)
-        */
-        p = pb_begin();
-        p = pb_push2(p,NV20_TCL_PRIMITIVE_3D_TX_OFFSET(0),(DWORD)texture.addr & 0x03ffffff,0x0001122a); //set stage 0 texture address & format
-        p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_NPOT_PITCH(0),texture.pitch<<16); //set stage 0 texture pitch (pitch<<16)
-        p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_NPOT_SIZE(0),(texture.width<<16)|texture.height); //set stage 0 texture width & height ((witdh<<16)|height)
-        p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_WRAP(0),0x00030303);//set stage 0 texture modes (0x0W0V0U wrapping: 1=wrap 2=mirror 3=clamp 4=border 5=clamp to edge)
-        p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_ENABLE(0),0x4003ffc0); //set stage 0 texture enable flags
-        //p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_FILTER(0),0x04074000); //set stage 0 texture filters (AA!) -> works on xemu + real hw
-        //p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_FILTER(0),0x02022000); //set stage 0 texture filters (no AA - nearest neighbor) -> no it isn't -> works on xemu + real hw
-        pb_end(p);
+            p = pb_push2(p,NV20_TCL_PRIMITIVE_3D_TX_OFFSET(1),(DWORD)u_tex_addr & 0x03ffffff,0x0001122a);
+            p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_NPOT_PITCH(1), u_tex_pitch<<16);
+            p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_NPOT_SIZE(1),(u_tex_width<<16)|u_tex_height);
+            p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_WRAP(1),0x00030303);
+            p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_ENABLE(1),0x4003ffc0);
+            p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_FILTER(1),0x04074000); // linear to upsample
 
-        /* Disable other texture stages */
-        p = pb_begin();
-        p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_ENABLE(1),0x0003ffc0);//set stage 1 texture enable flags (bit30 disabled)
-        p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_ENABLE(2),0x0003ffc0);//set stage 2 texture enable flags (bit30 disabled)
-        p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_ENABLE(3),0x0003ffc0);//set stage 3 texture enable flags (bit30 disabled)
-        p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_WRAP(1),0x00030303);//set stage 1 texture modes (0x0W0V0U wrapping: 1=wrap 2=mirror 3=clamp 4=border 5=clamp to edge)
-        p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_WRAP(2),0x00030303);//set stage 2 texture modes (0x0W0V0U wrapping: 1=wrap 2=mirror 3=clamp 4=border 5=clamp to edge)
-        p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_WRAP(3),0x00030303);//set stage 3 texture modes (0x0W0V0U wrapping: 1=wrap 2=mirror 3=clamp 4=border 5=clamp to edge)
-        p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_FILTER(1),0x02022000);//set stage 1 texture filters (no AA, stage not even used)
-        p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_FILTER(2),0x02022000);//set stage 2 texture filters (no AA, stage not even used)
-        p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_FILTER(3),0x02022000);//set stage 3 texture filters (no AA, stage not even used)
-        pb_end(p);
+            p = pb_push2(p,NV20_TCL_PRIMITIVE_3D_TX_OFFSET(2),(DWORD)v_tex_addr & 0x03ffffff,0x0001122a);
+            p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_NPOT_PITCH(2), v_tex_pitch<<16);
+            p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_NPOT_SIZE(2),(v_tex_width<<16)|v_tex_height);
+            p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_WRAP(2),0x00030303);
+            p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_ENABLE(2),0x4003ffc0);
+            p = pb_push1(p,NV20_TCL_PRIMITIVE_3D_TX_FILTER(2),0x04074000);
+            pb_end(p);
 
         /* Send shader constants
          *
@@ -367,10 +458,81 @@ static void draw_arrays(unsigned int mode, int start, int count)
 /* Load the textures we will render with */
 static void init_textures(void)
 {
-    texture.width = texture_width;
-    texture.height = texture_height;
-    texture.pitch = texture.width*4;
-    texture.addr = MmAllocateContiguousMemoryEx(texture.pitch*texture.height, 0, MAXRAM, 0, PAGE_READWRITE | PAGE_WRITECOMBINE);
-    memcpy(texture.addr, texture_rgba, sizeof(texture_rgba));
+    /* Generate a procedural YUV420 test pattern and upload it. */
+    int w = texture_width;
+    int h = texture_height;
+    int strideY = w;
+    int strideU = (w + 1) / 2;
+    int strideV = (w + 1) / 2;
+
+    uint8_t *yPlane = malloc((size_t)strideY * h);
+    uint8_t *uPlane = malloc((size_t)strideU * ((h + 1) / 2));
+    uint8_t *vPlane = malloc((size_t)strideV * ((h + 1) / 2));
+    if (!yPlane || !uPlane || !vPlane) {
+        free(yPlane);
+        free(uPlane);
+        free(vPlane);
+        return;
+    }
+
+    generate_test_yuv420(yPlane, uPlane, vPlane, w, h, strideY, strideU, strideV);
+    upload_yuv_planes_to_textures(yPlane, uPlane, vPlane, w, h, strideY, strideU, strideV);
+
+    free(yPlane);
+    free(uPlane);
+    free(vPlane);
+}
+
+/* Helper: clamp int -> uint8_t */
+static inline uint8_t clamp_u8(int v)
+{
+    if (v < 0) return 0;
+    if (v > 255) return 255;
+    return (uint8_t)v;
+}
+
+/* Convert planar YUV420 (Y, U, V) to 32bpp BGRA and upload into texture.addr.
+ * Parameters match the requested signature.
+ */
+static void upload_texture_from_yuv420(const uint8_t *yPlane, const uint8_t *uPlane, const uint8_t *vPlane,
+    int width, int height, int strideY, int strideU, int strideV)
+{
+    size_t size = (size_t)width * (size_t)height * 4;
+    texture.width = (uint16_t)width;
+    texture.height = (uint16_t)height;
+    texture.pitch = width * 4;
+    texture.addr = MmAllocateContiguousMemoryEx(size, 0, MAXRAM, 0, PAGE_READWRITE | PAGE_WRITECOMBINE);
+    if (!texture.addr) {
+        return;
+    }
+
+    for (int y = 0; y < height; y++) {
+        uint32_t *dstRow = (uint32_t *)((uint8_t *)texture.addr + (size_t)y * texture.pitch);
+        const uint8_t *yRow = yPlane + (size_t)y * strideY;
+        const uint8_t *uRow = uPlane + (size_t)(y >> 1) * strideU;
+        const uint8_t *vRow = vPlane + (size_t)(y >> 1) * strideV;
+
+        for (int x = 0; x < width; x++) {
+            int Y = yRow[x];
+            int U = uRow[x >> 1];
+            int V = vRow[x >> 1];
+
+            int C = Y - 16;
+            int D = U - 128;
+            int E = V - 128;
+
+            int R = (298 * C + 409 * E + 128) >> 8;
+            int G = (298 * C - 100 * D - 208 * E + 128) >> 8;
+            int B = (298 * C + 516 * D + 128) >> 8;
+
+            uint8_t r = clamp_u8(R);
+            uint8_t g = clamp_u8(G);
+            uint8_t b = clamp_u8(B);
+
+            /* Store BGRA (little-endian: B | G<<8 | R<<16 | A<<24) */
+            uint32_t pixel = (uint32_t)b | ((uint32_t)g << 8) | ((uint32_t)r << 16) | (0xFFu << 24);
+            dstRow[x] = pixel;
+        }
+    }
 }
 
