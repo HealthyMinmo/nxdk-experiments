@@ -6,11 +6,13 @@ struct vIn {
 struct vOut {
 	float4 pos  : POSITION;
 	float2 tex0 : TEXCOORD0;
+	float2 tex1 : TEXCOORD1;
 };
 
 vOut main(vIn I, uniform float4x4 m_viewport) {
 	vOut result;
 	result.pos = mul(float4(I.pos.xyz, 1.0f), m_viewport);
-	result.tex0 = I.tex.xy;
+	result.tex0 = I.tex.xy;  /* Y texture: full resolution (640x480) */
+	result.tex1 = I.tex.xy * 0.5;  /* UV texture: half resolution (320x240), scale by 0.5 */
 	return result;
 }

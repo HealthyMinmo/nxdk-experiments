@@ -1,0 +1,22 @@
+struct vOut {
+	float2 tex0 : TEXCOORD0;
+	float2 tex1 : TEXCOORD1;
+};
+
+float4 main(vOut I, uniform sampler2D texY, uniform sampler2D texUV) : COLOR {
+	float y = tex2D(texY, I.tex0).r;
+	float4 uv_samp = tex2D(texUV, I.tex1);
+	float u = uv_samp.r;  /* U in red channel */
+	float v = uv_samp.g;  /* V in green channel */
+
+	/* Normalized YUV->RGB: keep constants in [-1,1] */
+	float u_n = u - 0.5;
+	float v_n = v - 0.5;
+
+	/* Simplified conversion */
+	float r = y + v_n * 0.7;
+	float g = y - u_n * 0.34 - v_n * 0.71;
+	float b = y + u_n * 0.88;
+
+	return float4(r, g, b, 1.0);
+}
